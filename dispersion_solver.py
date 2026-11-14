@@ -22,7 +22,6 @@ from pathlib import Path
 import numpy as np
 from torch import Tensor
 
-from band_gap_objectives import relative_widths, widest_relative_gap
 from design_space import DesignSpace
 from geometry import HoneycombGeometry
 from matlab_caller import MatlabPool
@@ -162,8 +161,8 @@ def check_matlab(
     Raises
     ------
     ValueError
-        If the centre of the space is not buildable, or if the frequencies
-        come back unusable.
+        If the centre of the space is not buildable, or if the eigensolve
+        does not converge.
     RuntimeError
         If a solver function is missing from the MATLAB path.
     """
@@ -193,10 +192,5 @@ def check_matlab(
             *frequencies.shape, time.perf_counter() - started,
             frequencies.min(), frequencies.max(),
         )
-
-    relative_gaps = relative_widths(frequencies)
-    log.info("Relative widths %s", np.round(relative_gaps, 4).tolist())
-    log.info("Widest relative gap %.6f", widest_relative_gap(relative_gaps))
-    log.info("MATLAB check passed")
 
     return frequencies
