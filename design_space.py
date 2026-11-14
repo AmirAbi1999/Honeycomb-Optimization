@@ -17,7 +17,7 @@ import torch
 from botorch.utils.sampling import draw_sobol_samples
 from torch import Tensor
 
-from geometry import HoneycombGeometry, is_feasible
+from geometry import HoneycombGeometry, constraint_margins, is_feasible
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,22 @@ class DesignSpace:
             else torch.full_like(designs[..., 0], self.fixed[parameter.name])
             for parameter in fields(HoneycombGeometry)
         ], dim=-1)
+
+    def margins(self, designs: Tensor) -> Tensor:
+        """Evaluate the geometry constraints of each design's cell.
+
+        Parameters
+        ----------
+        designs : Tensor
+            Designs of shape (..., n_searched).
+
+        Returns
+        -------
+        Tensor
+            Margins of shape (..., 2), as geometry.constraint_margins returns
+            them, differentiable in the designs.
+        """
+        return constraint_margins(self.to_cells(designs))
 
     def is_feasible(self, designs: Tensor, *, clearance: float = 0.0) -> Tensor:
         """Return whether each design's cell can be built.
