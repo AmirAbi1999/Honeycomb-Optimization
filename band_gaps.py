@@ -1,18 +1,16 @@
-"""Band gaps of a solved dispersion relation, and the BO-CF objectives on them.
+"""Band gaps of a solved dispersion relation, and the targets measured on them.
 
 Frequencies arrive as (n_wave_numbers, n_bands). Gap i lies between bands i and
 i + 1: its edges are the highest band i and the lowest band i + 1 reach over
-every wave number. The inner functions h map frequencies to surrogate targets,
-and the outer functions g score the targets observed.
+every wave number. The single-objective run measures each gap's relative width;
+the front measures its width and midgap, and reads them as front points.
 
 This module contains:
     - BandGaps
     - measure_band_gaps
     - relative_widths
     - width_midgap_pairs
-    - widest_relative_gap
     - front_points
-    - front_hypervolume
     - front_gaps
 """
 
@@ -52,12 +50,7 @@ class BandGaps:
 
     @property
     def relative_widths(self) -> np.ndarray:
-        """Divide each width by its midgap frequency.
-
-        Returns
-        -------
-        numpy.ndarray
-            Relative width of every gap, dimensionless.
+        """Return each gap's width over its midgap frequency, dimensionless.
 
         Raises
         ------
@@ -145,41 +138,6 @@ def width_midgap_pairs(frequencies: np.ndarray) -> np.ndarray:
     return np.stack((gaps.widths, gaps.midgaps), axis=-1).ravel()
 
 
-def widest_relative_gap(relative_gaps: np.ndarray) -> float:
-    """Apply the single-objective outer function g to one observed design.
-
-    The acquisition applies g to posterior samples with its own torch maximum;
-    this reads the same scalar off one measured design, for reporting.
-
-    Parameters
-    ----------
-    relative_gaps : numpy.ndarray
-        Relative width of every gap of one design, as relative_widths
-        measures them.
-
-    Returns
-    -------
-    float
-        The widest relative gap, the scalar a single-objective run maximizes.
-
-    Raises
-    ------
-    ValueError
-        If relative_gaps is not a 1-D array holding at least one gap.
-    """
-    relative_gaps = np.asarray(relative_gaps, dtype=np.float64)
-
-    # A matrix would collapse every design into one number, which reads as a
-    # plausible incumbent and is not one
-    if relative_gaps.ndim != 1 or relative_gaps.size < 1:
-        raise ValueError(
-            "relative_gaps must be the 1-D relative widths of one design, "
-            f"holding at least one gap; received shape {relative_gaps.shape}."
-        )
-
-    return float(relative_gaps.max())
-
-
 def front_points(targets: Tensor, asinh_scale: float | None = None) -> Tensor:
     """Turn interleaved targets into the points of the width-midgap front.
 
@@ -209,86 +167,20 @@ def front_points(targets: Tensor, asinh_scale: float | None = None) -> Tensor:
     return torch.asinh(points / asinh_scale)
 
 
-def front_hypervolume(
+def front_gaps(
     targets: np.ndarray,
-    reference_point: np.ndarray,
-    *,
-    asinh_scale: float | None = None,
-) -> float:
-    """Apply the multi-objective outer function g to every design observed.
+    reference_point: tuple[float, float],
+) -> np.ndarray:
+    """List the gaps on the width-midgap front, lowest midgap first.
 
     Parameters
     ----------
     targets : numpy.ndarray
-        Interleaved widths and midgaps of shape (n_designs, 2 * n_gaps), one
-        row per design as width_midgap_pairs measures it.
-    reference_point : numpy.ndarray
-        Two values, as (width, negated midgap) in hertz, bounding the
-        dominated region, as the multi-objective acquisition is handed.
-    asinh_scale : float, optional
-        As front_points takes it.
-
-    Returns
-    -------
-    float
-        Area the gaps dominate, in square hertz or in the asinh units
-        asinh_scale sets.
-
-    Raises
-    ------
-    ValueError
-        If targets is not a finite matrix whose columns pair up, or if
-        reference_point does not hold exactly two finite values.
-    """
-    targets = np.asarray(targets, dtype=np.float64)
-    reference = np.asarray(reference_point, dtype=np.float64)
-
-    if (
-        targets.ndim != 2
-        or targets.shape[0] < 1
-        or targets.shape[1] < 2
-        or targets.shape[1] % 2 != 0
-        or not np.all(np.isfinite(targets))
-    ):
-        raise ValueError(
-            "targets must be a finite matrix of one row per design, "
-            "interleaving one width and one midgap per gap; received shape "
-            f"{targets.shape}."
-        )
-
-    if reference.shape != (2,) or not np.all(np.isfinite(reference)):
-        raise ValueError(
-            "reference_point must hold exactly two finite values, a width and "
-            f"a negated midgap; received {reference.tolist()}."
-        )
-
-    points = front_points(torch.as_tensor(targets), asinh_scale).reshape(-1, 2)
-    if asinh_scale is not None:
-        reference = np.arcsinh(reference / asinh_scale)
-
-    # A point short of the reference on either side dominates nothing, and
-    # clamping it there zeroes its share without a separate filter
-    points = np.maximum(points.numpy(), reference)
-
-    # Widest first, so each point adds only the height it reaches above every
-    # wider point before it, and the dominated staircase is measured exactly
-    ordered = points[np.argsort(-points[:, 0], kind="stable")]
-    heights = np.maximum.accumulate(ordered[:, 1])
-    steps = np.diff(heights, prepend=reference[1])
-
-    return float(np.sum((ordered[:, 0] - reference[0]) * steps))
-
-
-def front_gaps(targets: Tensor, reference_point: np.ndarray) -> np.ndarray:
-    """List the gaps on the front, lowest midgap first.
-
-    Parameters
-    ----------
-    targets : Tensor
         Interleaved widths and midgaps of shape (n_designs, 2 * n_gaps), as
         width_midgap_pairs measures them.
-    reference_point : numpy.ndarray
-        Two values, as (width, negated midgap), a gap has to beat to count.
+    reference_point : tuple of float
+        The (width, midgap) in hertz a gap has to beat to count: wider, and
+        centred lower.
 
     Returns
     -------
@@ -299,7 +191,8 @@ def front_gaps(targets: Tensor, reference_point: np.ndarray) -> np.ndarray:
     points = front_points(torch.as_tensor(targets))
     n_gaps = points.shape[-2]
     points = points.reshape(-1, 2)
-    reference = torch.as_tensor(reference_point, dtype=points.dtype)
+    width, midgap = reference_point
+    reference = torch.tensor([width, -midgap], dtype=points.dtype)
 
     # A gap short of the reference dominates nothing, and cannot be dominated
     # away by one that also falls short
