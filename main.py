@@ -75,6 +75,12 @@ def main() -> None:
             "asinh(value / scale); defaults to the reference point's geometric mean"
         ),
     )
+    parser.add_argument(
+        "--asinh",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="rescale both front axes through asinh; --no-asinh keeps them in hertz",
+    )
     for flag, default, text in (
         ("--initial", defaults.n_initial, "Sobol designs solved before the first fit"),
         ("--rounds", defaults.n_rounds, "fit-propose-solve rounds after that"),
@@ -107,14 +113,19 @@ def main() -> None:
     ):
         parser.error("--reference-point takes a finite width and a positive midgap")
     asinh_scale = arguments.asinh_scale
-    if asinh_scale is not None and not arguments.multi_objective:
-        parser.error("--asinh-scale goes with --multi-objective, and only there")
+    axis_options_given = asinh_scale is not None or not arguments.asinh
+    if axis_options_given and not arguments.multi_objective:
+        parser.error(
+            "--asinh-scale and --no-asinh go with --multi-objective, and only there",
+        )
+    if asinh_scale is not None and not arguments.asinh:
+        parser.error("--asinh-scale and --no-asinh exclude each other")
     if asinh_scale is not None and not (np.isfinite(asinh_scale) and asinh_scale > 0.0):
         parser.error("--asinh-scale takes a positive number of hertz")
 
     # The reference point bounds the gaps the front counts, so its geometric
     # mean sets the scale from the problem itself, in any unit
-    if asinh_scale is None and arguments.multi_objective:
+    if asinh_scale is None and arguments.multi_objective and arguments.asinh:
         if reference_point[0] <= 0.0:
             parser.error(
                 "--asinh-scale is required when the reference width is not positive",
@@ -163,10 +174,14 @@ def main() -> None:
         reference = torch.tensor(reference_point, dtype=torch.double)
         objective = HypervolumeObjective(to_points, to_points(reference)[0])
         settings.update(reference_point=reference_point, asinh_scale=asinh_scale)
+        axes = (
+            "linear axes in hertz" if asinh_scale is None
+            else f"axes turning logarithmic at {asinh_scale:.6g} Hz"
+        )
         log.info(
             "The front counts gaps wider than %.6g Hz and centred below %.6g Hz, "
-            "on axes turning logarithmic at %.6g Hz",
-            *reference_point, asinh_scale,
+            "on %s",
+            *reference_point, axes,
         )
     else:
         measure_targets = relative_widths
