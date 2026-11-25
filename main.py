@@ -66,6 +66,15 @@ def main() -> None:
             "centred lower; required with --multi-objective"
         ),
     )
+    parser.add_argument(
+        "--asinh-scale",
+        type=float,
+        metavar="hertz",
+        help=(
+            "where both front axes turn from linear to logarithmic, through "
+            "asinh(value / scale); defaults to the reference point's geometric mean"
+        ),
+    )
     for flag, default, text in (
         ("--initial", defaults.n_initial, "Sobol designs solved before the first fit"),
         ("--rounds", defaults.n_rounds, "fit-propose-solve rounds after that"),
@@ -97,6 +106,20 @@ def main() -> None:
         np.isfinite(reference_point).all() and reference_point[1] > 0.0
     ):
         parser.error("--reference-point takes a finite width and a positive midgap")
+    asinh_scale = arguments.asinh_scale
+    if asinh_scale is not None and not arguments.multi_objective:
+        parser.error("--asinh-scale goes with --multi-objective, and only there")
+    if asinh_scale is not None and not (np.isfinite(asinh_scale) and asinh_scale > 0.0):
+        parser.error("--asinh-scale takes a positive number of hertz")
+
+    # The reference point bounds the gaps the front counts, so its geometric
+    # mean sets the scale from the problem itself, in any unit
+    if asinh_scale is None and arguments.multi_objective:
+        if reference_point[0] <= 0.0:
+            parser.error(
+                "--asinh-scale is required when the reference width is not positive",
+            )
+        asinh_scale = float(np.sqrt(reference_point[0] * reference_point[1]))
 
     layout = "%(asctime)s %(levelname)s %(message)s"
     logging.basicConfig(level=logging.INFO, format=layout)
@@ -132,8 +155,6 @@ def main() -> None:
 
     settings = {"space": asdict(space), "solver": asdict(solver), **asdict(config)}
     if arguments.multi_objective:
-        # Hertz at which both front axes turn from linear to logarithmic
-        asinh_scale = 1.0
         to_points = partial(front_points, asinh_scale=asinh_scale)
         measure_targets = width_midgap_pairs
 
@@ -143,8 +164,9 @@ def main() -> None:
         objective = HypervolumeObjective(to_points, to_points(reference)[0])
         settings.update(reference_point=reference_point, asinh_scale=asinh_scale)
         log.info(
-            "The front counts gaps wider than %.6g Hz and centred below %.6g Hz",
-            *reference_point,
+            "The front counts gaps wider than %.6g Hz and centred below %.6g Hz, "
+            "on axes turning logarithmic at %.6g Hz",
+            *reference_point, asinh_scale,
         )
     else:
         measure_targets = relative_widths
